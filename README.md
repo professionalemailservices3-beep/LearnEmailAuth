@@ -1,11 +1,5 @@
 
-  # Email Deliverability Course Design
+  # Email Deliverability Email Authentication App
 
-  This is a code bundle for Email Deliverability Course Design.
-
-  ## Running the code
-
-  Run `npm i` to install the dependencies.
-
-  Run `npm run dev` to start the development server.
+  This App is used to lookup DNS, review any issues pertaining to email authentication (SPF, DKIM, DMARC). Explicitly created for Moosend
   
