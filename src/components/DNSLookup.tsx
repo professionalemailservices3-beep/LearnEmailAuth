@@ -38,6 +38,8 @@ interface AnalysisResult {
   dmarc: {
     exists: boolean;
     record: string | null;
+    records: string[];
+    hasMultiple: boolean;
     policy: string | null;
     errors: string[];
   };
@@ -162,14 +164,23 @@ export function DNSLookup() {
       // Check DMARC
       const dmarcDomain = `_dmarc.${cleanDomain}`;
       const dmarcRecords = await lookupDNS(dmarcDomain, "TXT");
-      const dmarcData = dmarcRecords.length > 0 ? dmarcRecords[0].data.replace(/^"|"$/g, '') : null;
+      const dmarcResults = dmarcRecords
+        .map(r => r.data.replace(/^"|"$/g, ''))
+        .filter(data => data.startsWith('v=DMARC1'));
+      
+      const hasMultipleDMARC = dmarcResults.length > 1;
+      const dmarcData = dmarcResults.length > 0 ? dmarcResults[0] : null;
       const dmarcErrors: string[] = [];
 
+      if (hasMultipleDMARC) {
+        dmarcErrors.push(`Multiple DMARC records detected (${dmarcResults.length} records). Only one DMARC record is allowed per domain. This invalidates all DMARC records.`);
+      }
+
       let dmarcPolicy = null;
-      if (dmarcData) {
+      if (dmarcData && !hasMultipleDMARC) {
         const policyMatch = dmarcData.match(/p=([^;]+)/);
         dmarcPolicy = policyMatch ? policyMatch[1] : null;
-      } else {
+      } else if (!dmarcData) {
         dmarcErrors.push("No DMARC record found. DMARC is recommended for complete email authentication.");
       }
 
@@ -190,8 +201,10 @@ export function DNSLookup() {
           errors: dkimErrors,
         },
         dmarc: {
-          exists: !!dmarcData,
+          exists: dmarcResults.length > 0,
           record: dmarcData,
+          records: dmarcResults,
+          hasMultiple: hasMultipleDMARC,
           policy: dmarcPolicy,
           errors: dmarcErrors,
         },
@@ -278,7 +291,23 @@ export function DNSLookup() {
 
     // DMARC Section
     report += `\n--- DMARC RECORDS ---\n`;
-    if (analysis.dmarc.exists) {
+    if (analysis.dmarc.hasMultiple) {
+      report += `Status: ❌ CRITICAL - Multiple DMARC Records (Invalid Configuration)\n`;
+      report += `Records Found: ${analysis.dmarc.records.length}\n\n`;
+      report += `Issue: Only ONE DMARC record is allowed per domain. Multiple records invalidate the entire DMARC configuration.\n\n`;
+      report += `Current DMARC Records:\n`;
+      analysis.dmarc.records.forEach((rec: string, idx: number) => {
+        const policyMatch = rec.match(/p=([^;]+)/);
+        const policy = policyMatch ? policyMatch[1] : 'unknown';
+        report += `  Record ${idx + 1} (Policy: ${policy}): ${rec}\n`;
+      });
+      report += `\nAction Required:\n`;
+      report += `  1. Review both DMARC records above\n`;
+      report += `  2. Choose which policy best fits customer needs\n`;
+      report += `  3. Delete ONE of the DMARC records from DNS manager\n`;
+      report += `  4. Keep only the DMARC record with preferred policy\n`;
+      report += `Note: We don't recommend a specific record - customer should consult deliverability team if unsure.\n`;
+    } else if (analysis.dmarc.exists) {
       report += `Status: ✓ Found\n`;
       if (analysis.dmarc.policy) {
         report += `Policy: p=${analysis.dmarc.policy}\n`;
@@ -609,7 +638,59 @@ export function DNSLookup() {
                   <h3 className="text-white">DMARC Records</h3>
                 </div>
 
-                {analysis.dmarc.exists ? (
+                {analysis.dmarc.hasMultiple ? (
+                  <div className="space-y-3">
+                    <Alert className="bg-red-500/10 backdrop-blur-xl border-red-500/30 border-2">
+                      <XCircle className="h-5 w-5 text-red-400" />
+                      <AlertDescription className="text-white/90">
+                        <span className="text-red-300 block mb-3 font-semibold">⚠️ Multiple DMARC Records Detected - Configuration Invalid</span>
+
+                        <div className="bg-amber-500/10 backdrop-blur-sm p-3 rounded border border-amber-400/30 mb-3">
+                          <p className="text-sm text-white mb-2">
+                            <strong>Critical Issue:</strong> {analysis.dmarc.records.length} unique DMARC records found. Only ONE DMARC record is allowed per domain.
+                          </p>
+                          <p className="text-sm text-white/70">
+                            Having multiple DMARC records invalidates your entire DMARC configuration. Email receivers will ignore all DMARC policies.
+                          </p>
+                        </div>
+
+                        <p className="text-sm text-white mb-2">
+                          <strong>Current DMARC Records Found:</strong>
+                        </p>
+                        <div className="space-y-2 mb-3">
+                          {analysis.dmarc.records.map((rec: string, idx: number) => {
+                            const policyMatch = rec.match(/p=([^;]+)/);
+                            const policy = policyMatch ? policyMatch[1] : 'unknown';
+                            return (
+                              <div key={idx} className="bg-black/30 backdrop-blur-sm p-3 rounded border border-white/10">
+                                <div className="flex items-start justify-between gap-2 mb-1">
+                                  <span className="text-red-300 text-xs font-semibold">Record {idx + 1}</span>
+                                  <span className="text-amber-300 text-xs">Policy: {policy}</span>
+                                </div>
+                                <code className="text-blue-200 text-xs break-all">{rec}</code>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className="bg-blue-500/10 backdrop-blur-sm p-3 rounded border border-blue-400/30">
+                          <p className="text-sm text-white mb-2">
+                            <strong>How to fix:</strong>
+                          </p>
+                          <ol className="text-sm text-white/80 space-y-1 ml-4 list-decimal">
+                            <li>Review both DMARC records above</li>
+                            <li>Choose which policy best fits your needs (p=none for monitoring, p=quarantine or p=reject for enforcement)</li>
+                            <li>Delete ONE of the DMARC records from your DNS manager</li>
+                            <li>Keep only the DMARC record with your preferred policy</li>
+                          </ol>
+                          <p className="text-xs text-white/60 mt-2">
+                            Note: We don't recommend a specific record since the choice depends on your email authentication strategy. If unsure, consult with your deliverability team.
+                          </p>
+                        </div>
+                      </AlertDescription>
+                    </Alert>
+                  </div>
+                ) : analysis.dmarc.exists ? (
                   <div className="space-y-3">
                     <Alert className="bg-green-500/10 backdrop-blur-xl border-green-500/30">
                       <CheckCircle2 className="h-5 w-5 text-green-400" />
