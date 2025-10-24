@@ -168,9 +168,13 @@ export function DNSLookup() {
       const dkimDomain = `ms._domainkey.${cleanDomain}`;
       const dkimRecords = await lookupDNS(dkimDomain, "TXT");
       
-      // Filter for actual TXT records (type 16) and check if they contain DKIM key data
+      // Filter for actual TXT records (type 16) that contain Moosend DKIM key data
       let dkimData = null;
+      let isCNAME = false;
+      let cnameTarget = null;
+      
       if (dkimRecords.length > 0) {
+        // First, check if there's a TXT record with actual DKIM data
         const txtRecords = dkimRecords.filter(r => r.type === 16);
         if (txtRecords.length > 0) {
           const recordData = txtRecords[0].data.replace(/^"|"$/g, '');
@@ -179,22 +183,40 @@ export function DNSLookup() {
             dkimData = recordData;
           }
         }
-      }
-      
-      // If we got a CNAME instead of TXT, check if there's a CNAME record
-      let isCNAME = false;
-      let cnameTarget = null;
-      if (!dkimData && dkimRecords.length > 0) {
-        const cnameRecords = dkimRecords.filter(r => r.type === 5);
-        if (cnameRecords.length > 0) {
-          isCNAME = true;
-          cnameTarget = cnameRecords[0].data.replace(/\.$/, ''); // Remove trailing dot
-          // Try to fetch the actual DKIM key from the CNAME target
-          const targetRecords = await lookupDNS(cnameTarget, "TXT");
-          if (targetRecords.length > 0) {
-            const txtRecords = targetRecords.filter(r => r.type === 16);
-            if (txtRecords.length > 0) {
-              dkimData = txtRecords[0].data.replace(/^"|"$/g, '');
+        
+        // If no direct TXT record, check for CNAME
+        if (!dkimData) {
+          const cnameRecords = dkimRecords.filter(r => r.type === 5);
+          if (cnameRecords.length > 0) {
+            isCNAME = true;
+            cnameTarget = cnameRecords[0].data.replace(/\.$/, ''); // Remove trailing dot
+            
+            // Check if CNAME points to a known third-party provider (not Moosend)
+            const isThirdPartyProvider = cnameTarget.includes('sendgrid') || 
+                                        cnameTarget.includes('mailgun') || 
+                                        cnameTarget.includes('mailchimp') ||
+                                        cnameTarget.includes('sparkpost') ||
+                                        cnameTarget.includes('amazonses');
+            
+            if (isThirdPartyProvider) {
+              // Don't resolve - this is not Moosend's DKIM
+              dkimData = null;
+            } else {
+              // Try to fetch the actual DKIM key from the CNAME target
+              try {
+                const targetRecords = await lookupDNS(cnameTarget, "TXT");
+                if (targetRecords.length > 0) {
+                  const txtRecords = targetRecords.filter(r => r.type === 16);
+                  if (txtRecords.length > 0) {
+                    const targetData = txtRecords[0].data.replace(/^"|"$/g, '');
+                    if (targetData.includes('v=DKIM1') || targetData.includes('p=')) {
+                      dkimData = targetData;
+                    }
+                  }
+                }
+              } catch (err) {
+                console.error('Error resolving CNAME target:', err);
+              }
             }
           }
         }
@@ -204,17 +226,39 @@ export function DNSLookup() {
       let duplicatedLocation = null;
       let dkimErrors: string[] = [];
 
-      // If no DKIM found, check for domain duplication
+      // If no DKIM found, check for domain duplication or third-party DKIM
       if (!dkimData) {
-        const duplicatedDomain = `ms._domainkey.${cleanDomain}.${cleanDomain}`;
-        const duplicatedRecords = await lookupDNS(duplicatedDomain, "TXT");
-
-        if (duplicatedRecords.length > 0) {
-          isDuplicated = true;
-          duplicatedLocation = duplicatedDomain;
-          dkimErrors.push(`DKIM record found at wrong location: ${duplicatedDomain}. The DNS manager auto-appended the domain. Delete the record and recreate using only "ms._domainkey" as the host value.`);
+        // Check if there's a CNAME to a third-party provider
+        if (isCNAME && cnameTarget) {
+          const isThirdPartyProvider = cnameTarget.includes('sendgrid') || 
+                                      cnameTarget.includes('mailgun') || 
+                                      cnameTarget.includes('mailchimp') ||
+                                      cnameTarget.includes('sparkpost') ||
+                                      cnameTarget.includes('amazonses');
+          
+          if (isThirdPartyProvider) {
+            const providerName = cnameTarget.includes('sendgrid') ? 'SendGrid' :
+                                cnameTarget.includes('mailgun') ? 'Mailgun' :
+                                cnameTarget.includes('mailchimp') ? 'Mailchimp' :
+                                cnameTarget.includes('sparkpost') ? 'SparkPost' :
+                                cnameTarget.includes('amazonses') ? 'Amazon SES' : 'another provider';
+            
+            dkimErrors.push(`DKIM selector "ms._domainkey" is currently configured for ${providerName} (CNAME: ${cnameTarget}). To use Moosend, the customer needs to update this DKIM record with the values from their Moosend dashboard.`);
+          } else {
+            dkimErrors.push(`No Moosend DKIM record found. The selector "ms._domainkey" has a CNAME to ${cnameTarget}, but it doesn't appear to be configured correctly.`);
+          }
         } else {
-          dkimErrors.push(`No DKIM record found for selector "ms._domainkey". If you recently added it, wait 5-30 minutes for DNS propagation.`);
+          // Check for domain duplication
+          const duplicatedDomain = `ms._domainkey.${cleanDomain}.${cleanDomain}`;
+          const duplicatedRecords = await lookupDNS(duplicatedDomain, "TXT");
+
+          if (duplicatedRecords.length > 0) {
+            isDuplicated = true;
+            duplicatedLocation = duplicatedDomain;
+            dkimErrors.push(`DKIM record found at wrong location: ${duplicatedDomain}. The DNS manager auto-appended the domain. Delete the record and recreate using only "ms._domainkey" as the host value.`);
+          } else {
+            dkimErrors.push(`No DKIM record found for selector "ms._domainkey". If you recently added it, wait 5-30 minutes for DNS propagation.`);
+          }
         }
       }
 
