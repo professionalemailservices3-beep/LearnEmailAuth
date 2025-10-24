@@ -62,9 +62,21 @@ export function DNSLookup() {
   const lookupDNS = async (queryDomain: string, recordType: string = "TXT"): Promise<DNSRecord[]> => {
     try {
       // Using Google DNS-over-HTTPS API (supports CORS for browser requests)
+      // Add timeout to prevent infinite waiting
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
       const response = await fetch(
-        `https://dns.google.com/resolve?name=${encodeURIComponent(queryDomain)}&type=${recordType}`
+        `https://dns.google.com/resolve?name=${encodeURIComponent(queryDomain)}&type=${recordType}`,
+        { signal: controller.signal }
       );
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`DNS API returned status ${response.status}`);
+      }
+
       const data: DNSResponse = await response.json();
 
       if (data.Status === 0 && data.Answer && data.Answer.length > 0) {
@@ -72,8 +84,12 @@ export function DNSLookup() {
       }
       return [];
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.error('DNS lookup timeout:', err);
+        throw new Error('DNS lookup timed out. Please check your network connection.');
+      }
       console.error('DNS lookup error:', err);
-      return [];
+      throw err;
     }
   };
 
@@ -310,7 +326,8 @@ export function DNSLookup() {
         },
       });
     } catch (err) {
-      setError("Failed to perform DNS lookup. Please try again.");
+      const errorMessage = err instanceof Error ? err.message : "Failed to perform DNS lookup. Please try again.";
+      setError(errorMessage);
       setAnalysis(null);
     } finally {
       setLoading(false);
