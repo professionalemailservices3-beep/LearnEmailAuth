@@ -58,7 +58,6 @@ export function DNSLookup() {
   const [loading, setLoading] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [requestId, setRequestId] = useState<number>(0);
 
   const lookupDNS = async (queryDomain: string, recordType: string = "TXT"): Promise<DNSRecord[]> => {
     try {
@@ -88,10 +87,6 @@ export function DNSLookup() {
     if (loading) {
       return;
     }
-
-    // Generate a unique request ID to handle race conditions
-    const currentRequestId = Date.now();
-    setRequestId(currentRequestId);
     
     setLoading(true);
     setError(null);
@@ -285,48 +280,40 @@ export function DNSLookup() {
         dmarcErrors.push("No DMARC record found. DMARC is recommended for complete email authentication.");
       }
 
-      // Check if this is still the current request (prevent race conditions)
-      if (currentRequestId === requestId) {
-        setAnalysis({
-          spf: {
-            exists: spfResults.length > 0,
-            records: spfResults,
-            analysis: spfAnalysis,
-            hasMoosend,
-            hasMultiple: hasMultipleSPF,
-            errors: spfErrors,
-            warnings: spfWarnings,
-          },
-          dkim: {
-            exists: !!dkimData,
-            record: dkimData,
-            isCNAME,
-            cnameTarget,
-            isDuplicated,
-            duplicatedLocation,
-            errors: dkimErrors,
-          },
-          dmarc: {
-            exists: dmarcResults.length > 0,
-            record: dmarcData,
-            records: dmarcResults,
-            hasMultiple: hasMultipleDMARC,
-            policy: dmarcPolicy,
-            errors: dmarcErrors,
-          },
-        });
-      }
+      // Set the analysis results
+      setAnalysis({
+        spf: {
+          exists: spfResults.length > 0,
+          records: spfResults,
+          analysis: spfAnalysis,
+          hasMoosend,
+          hasMultiple: hasMultipleSPF,
+          errors: spfErrors,
+          warnings: spfWarnings,
+        },
+        dkim: {
+          exists: !!dkimData,
+          record: dkimData,
+          isCNAME,
+          cnameTarget,
+          isDuplicated,
+          duplicatedLocation,
+          errors: dkimErrors,
+        },
+        dmarc: {
+          exists: dmarcResults.length > 0,
+          record: dmarcData,
+          records: dmarcResults,
+          hasMultiple: hasMultipleDMARC,
+          policy: dmarcPolicy,
+          errors: dmarcErrors,
+        },
+      });
     } catch (err) {
-      // Only set error if this is still the current request
-      if (currentRequestId === requestId) {
-        setError("Failed to perform DNS lookup. Please try again.");
-        setAnalysis(null);
-      }
+      setError("Failed to perform DNS lookup. Please try again.");
+      setAnalysis(null);
     } finally {
-      // Only set loading to false if this is still the current request
-      if (currentRequestId === requestId) {
-        setLoading(false);
-      }
+      setLoading(false);
     }
   };
 
