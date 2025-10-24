@@ -23,6 +23,12 @@ interface AnalysisResult {
   spf: {
     exists: boolean;
     records: string[];
+    analysis: Array<{
+      record: string;
+      index: number;
+      hasMoosend: boolean;
+      isMoosendOnly: boolean;
+    }>;
     hasMoosend: boolean;
     hasMultiple: boolean;
     errors: string[];
@@ -88,7 +94,15 @@ export function DNSLookup() {
         .map(r => r.data.replace(/^"|"$/g, ''))
         .filter(data => data.startsWith('v=spf1'));
 
-      const hasMoosend = spfResults.some(spf => spf.includes('include:spfa.mailendo.com'));
+      // Analyze each SPF record for Moosend authorization
+      const spfAnalysis = spfResults.map((spf, index) => ({
+        record: spf,
+        index: index + 1,
+        hasMoosend: spf.includes('include:spfa.mailendo.com'),
+        isMoosendOnly: !!spf.match(/^v=spf1\s+include:spfa\.mailendo\.com\s+[~\-?+]all$/),
+      }));
+
+      const hasMoosend = spfAnalysis.some(spf => spf.hasMoosend);
       const hasMultipleSPF = spfResults.length > 1;
       const spfErrors: string[] = [];
       const spfWarnings: string[] = [];
@@ -188,6 +202,7 @@ export function DNSLookup() {
         spf: {
           exists: spfResults.length > 0,
           records: spfResults,
+          analysis: spfAnalysis,
           hasMoosend,
           hasMultiple: hasMultipleSPF,
           errors: spfErrors,
@@ -233,24 +248,49 @@ export function DNSLookup() {
     report += `--- SPF RECORDS ---\n`;
     if (analysis.spf.exists) {
       report += `Status: ${analysis.spf.errors.length > 0 ? '❌ Issues Found' : '✓ Found'}\n`;
+      report += `Records Found: ${analysis.spf.records.length}\n`;
 
-      report += `\nCurrent SPF Record(s):\n`;
-      analysis.spf.records.forEach((rec: string, idx: number) => {
-        if (analysis.spf.hasMultiple) {
-          report += `  Record ${idx + 1}: ${rec}\n`;
+      if (analysis.spf.hasMultiple) {
+        report += `\n⚠️ CRITICAL: Multiple SPF records detected (only 1 allowed per domain)\n`;
+        report += `This invalidates ALL SPF records.\n\n`;
+        
+        report += `All SPF Records Found:\n`;
+        analysis.spf.analysis.forEach((spfInfo) => {
+          report += `  Record ${spfInfo.index}: ${spfInfo.record}\n`;
+          if (spfInfo.hasMoosend && spfInfo.isMoosendOnly) {
+            report += `    └─ Analysis: Moosend Only (likely incomplete)\n`;
+          } else if (spfInfo.hasMoosend) {
+            report += `    └─ Analysis: Contains Moosend + other services (GOOD)\n`;
+          } else {
+            report += `    └─ Analysis: No Moosend authorization\n`;
+          }
+        });
+
+        // Intelligent recommendation
+        const recordsWithMoosend = analysis.spf.analysis.filter(s => s.hasMoosend && !s.isMoosendOnly);
+        if (recordsWithMoosend.length > 0) {
+          const bestRecord = recordsWithMoosend[0];
+          report += `\n💡 RECOMMENDED ACTION:\n`;
+          report += `  Keep: SPF Record ${bestRecord.index} (has all services + Moosend)\n`;
+          report += `  Delete: All other SPF records\n`;
+          report += `  Reason: This record preserves existing services while adding Moosend authorization\n`;
         } else {
-          report += `  ${rec}\n`;
+          report += `\n💡 RECOMMENDED ACTION:\n`;
+          report += `  Merge records manually - no single record contains both existing services and Moosend\n`;
         }
-      });
-
-      if (analysis.spf.hasMoosend) {
-        report += `\nMoosend Authorization: ✓ Authorized (include:spfa.mailendo.com present)\n`;
-      } else if (!analysis.spf.hasMultiple) {
-        report += `\nMoosend Authorization: ❌ NOT authorized (missing include:spfa.mailendo.com)\n`;
-        report += `Action: Add "include:spfa.mailendo.com" to the existing SPF record\n`;
-        const currentSpf = analysis.spf.records[0];
-        const updatedSpf = currentSpf.replace(/~all|-all|\?all|\+all/g, 'include:spfa.mailendo.com $&');
-        report += `\nRecommended Updated Record:\n  ${updatedSpf}\n`;
+      } else {
+        report += `\nCurrent SPF Record:\n`;
+        report += `  ${analysis.spf.records[0]}\n`;
+        
+        if (analysis.spf.hasMoosend) {
+          report += `\nMoosend Authorization: ✓ Authorized (include:spfa.mailendo.com present)\n`;
+        } else {
+          report += `\nMoosend Authorization: ❌ NOT authorized (missing include:spfa.mailendo.com)\n`;
+          report += `Action: Add "include:spfa.mailendo.com" to the existing SPF record\n`;
+          const currentSpf = analysis.spf.records[0];
+          const updatedSpf = currentSpf.replace(/~all|-all|\?all|\+all/g, 'include:spfa.mailendo.com $&');
+          report += `\nRecommended Updated Record:\n  ${updatedSpf}\n`;
+        }
       }
 
       if (analysis.spf.errors.length > 0) {
@@ -415,43 +455,161 @@ export function DNSLookup() {
                       </AlertDescription>
                     </Alert>
 
-                    {/* Moosend Check */}
-                    {analysis.spf.hasMoosend && (
-                      <Alert className="bg-blue-500/10 backdrop-blur-xl border-blue-500/30">
-                        <CheckCircle2 className="h-5 w-5 text-blue-400" />
-                        <AlertDescription className="text-white/90">
-                          <span className="text-blue-300">✓ Moosend SPF record detected</span>
-                          <p className="text-sm text-white/70 mt-1">
-                            <code className="bg-white/10 px-2 py-1 rounded text-blue-200">include:spfa.mailendo.com</code> is present
+                    {/* Display all SPF records */}
+                    {analysis.spf.hasMultiple ? (
+                      <div className="space-y-3">
+                        <div className="bg-amber-500/10 backdrop-blur-sm p-3 rounded border border-amber-400/30">
+                          <p className="text-sm text-white mb-2">
+                            <strong>All SPF Records Found:</strong> ({analysis.spf.records.length} records - Only 1 allowed)
                           </p>
-                        </AlertDescription>
-                      </Alert>
-                    )}
+                        </div>
+                        
+                        {analysis.spf.analysis.map((spfInfo, idx) => (
+                          <Card key={idx} className="bg-white/5 backdrop-blur-sm border-white/10 p-4">
+                            <div className="space-y-2">
+                              <div className="flex items-start justify-between gap-2 mb-2">
+                                <span className="text-white/80 text-sm font-semibold">SPF Record #{spfInfo.index}</span>
+                                <div className="flex gap-2">
+                                  {spfInfo.hasMoosend && (
+                                    <span className="text-xs bg-green-500/20 text-green-300 px-2 py-1 rounded">Has Moosend</span>
+                                  )}
+                                  {spfInfo.isMoosendOnly && (
+                                    <span className="text-xs bg-blue-500/20 text-blue-300 px-2 py-1 rounded">Moosend Only</span>
+                                  )}
+                                  {!spfInfo.hasMoosend && (
+                                    <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-1 rounded">No Moosend</span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="bg-black/30 backdrop-blur-sm p-3 rounded border border-white/10 break-all">
+                                <code className="text-blue-200 text-sm">{spfInfo.record}</code>
+                              </div>
+                              <Button
+                                onClick={() => copyToClipboard(spfInfo.record)}
+                                variant="ghost"
+                                size="sm"
+                                className="text-white/60 hover:text-white hover:bg-white/5 w-full"
+                              >
+                                <Copy className="h-4 w-4 mr-2" />
+                                Copy Record #{spfInfo.index}
+                              </Button>
+                            </div>
+                          </Card>
+                        ))}
+                        
+                        {/* Intelligent recommendation */}
+                        <Alert className="bg-blue-500/10 backdrop-blur-xl border-blue-500/30">
+                          <CheckCircle2 className="h-5 w-5 text-blue-400" />
+                          <AlertDescription className="text-white/90">
+                            <span className="text-blue-300 block mb-3 font-semibold">💡 Intelligent Recommendation</span>
+                            {(() => {
+                              const moosendOnlyRecords = analysis.spf.analysis.filter(s => s.isMoosendOnly);
+                              const recordsWithMoosend = analysis.spf.analysis.filter(s => s.hasMoosend && !s.isMoosendOnly);
+                              const recordsWithoutMoosend = analysis.spf.analysis.filter(s => !s.hasMoosend);
 
-                    {!analysis.spf.hasMoosend && !analysis.spf.hasMultiple && (
-                      <Alert className="bg-amber-500/10 backdrop-blur-xl border-amber-500/30">
-                        <AlertTriangle className="h-5 w-5 text-amber-400" />
-                        <AlertDescription className="text-white/90">
-                          <span className="text-amber-300 block mb-2">SPF record exists, but Moosend is not authorized</span>
-                          <p className="text-sm text-white/70 mb-2">
-                            Current SPF Record:
-                          </p>
-                          <div className="bg-black/30 backdrop-blur-sm p-2 rounded border border-white/10 break-all mb-3">
-                            <code className="text-blue-200 text-sm">{analysis.spf.records[0]}</code>
+                              if (recordsWithMoosend.length > 0) {
+                                const bestRecord = recordsWithMoosend[0];
+                                return (
+                                  <div>
+                                    <p className="text-sm text-white mb-2">
+                                      <strong>Recommended Action:</strong> Keep SPF Record #{bestRecord.index} and delete the others.
+                                    </p>
+                                    <div className="bg-green-500/10 backdrop-blur-sm p-3 rounded border border-green-400/30 mb-3">
+                                      <p className="text-sm text-green-300 mb-2">✅ Keep This Record (has all services + Moosend):</p>
+                                      <code className="text-green-200 text-sm break-all">{bestRecord.record}</code>
+                                    </div>
+                                    <p className="text-sm text-white/80">
+                                      <strong>Why:</strong> This record contains both existing services and Moosend authorization, ensuring no email services will break.
+                                    </p>
+                                    {moosendOnlyRecords.length > 0 && (
+                                      <p className="text-sm text-white/70 mt-2">
+                                        Records #{moosendOnlyRecords.map(r => r.index).join(', ')} contain only Moosend and should be deleted.
+                                      </p>
+                                    )}
+                                    {recordsWithoutMoosend.length > 0 && (
+                                      <p className="text-sm text-white/70 mt-1">
+                                        Records #{recordsWithoutMoosend.map(r => r.index).join(', ')} lack Moosend authorization and should be deleted.
+                                      </p>
+                                    )}
+                                  </div>
+                                );
+                              } else {
+                                return (
+                                  <div>
+                                    <p className="text-sm text-white mb-2">
+                                      <strong>Action Required:</strong> No complete record found. You need to merge the records.
+                                    </p>
+                                    <p className="text-sm text-white/70 mb-2">
+                                      Take the most complete SPF record and add <code className="bg-white/10 px-1 rounded">include:spfa.mailendo.com</code> to it.
+                                    </p>
+                                  </div>
+                                );
+                              }
+                            })()}
+                          </AlertDescription>
+                        </Alert>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Single record display */}
+                        <Card className="bg-white/5 backdrop-blur-sm border-white/10 p-4">
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-white/60 text-sm">Current SPF Record</span>
+                              <div className="flex gap-2">
+                                {analysis.spf.hasMoosend ? (
+                                  <span className="text-xs bg-green-500/20 text-green-300 px-2 py-1 rounded">✓ Has Moosend</span>
+                                ) : (
+                                  <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-1 rounded">⚠ No Moosend</span>
+                                )}
+                                <Button
+                                  onClick={() => copyToClipboard(analysis.spf.records[0])}
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-white/60 hover:text-white hover:bg-white/5"
+                                >
+                                  <Copy className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="bg-black/30 backdrop-blur-sm p-3 rounded border border-white/10 break-all">
+                              <code className="text-blue-200 text-sm">{analysis.spf.records[0]}</code>
+                            </div>
                           </div>
-                          <p className="text-sm text-white/70 mb-2">
-                            The customer needs to add <code className="bg-white/10 px-1 rounded text-blue-200">include:spfa.mailendo.com</code> to their existing SPF record.
-                          </p>
-                          <p className="text-sm text-white/70 mb-2">
-                            <strong>Recommended Updated Record:</strong>
-                          </p>
-                          <div className="bg-green-500/10 backdrop-blur-sm p-2 rounded border border-green-400/30 break-all">
-                            <code className="text-green-200 text-sm">
-                              {analysis.spf.records[0].replace(/~all|-all|\?all|\+all/g, 'include:spfa.mailendo.com $&')}
-                            </code>
-                          </div>
-                        </AlertDescription>
-                      </Alert>
+                        </Card>
+
+                        {!analysis.spf.hasMoosend && (
+                          <Alert className="bg-amber-500/10 backdrop-blur-xl border-amber-500/30">
+                            <AlertTriangle className="h-5 w-5 text-amber-400" />
+                            <AlertDescription className="text-white/90">
+                              <span className="text-amber-300 block mb-2">Moosend is not authorized in SPF record</span>
+                              <p className="text-sm text-white/70 mb-2">
+                                The customer needs to add <code className="bg-white/10 px-1 rounded text-blue-200">include:spfa.mailendo.com</code> to their existing SPF record.
+                              </p>
+                              <p className="text-sm text-white/70 mb-2">
+                                <strong>Recommended Updated Record:</strong>
+                              </p>
+                              <div className="bg-green-500/10 backdrop-blur-sm p-2 rounded border border-green-400/30 break-all">
+                                <code className="text-green-200 text-sm">
+                                  {analysis.spf.records[0].replace(/~all|-all|\?all|\+all/g, 'include:spfa.mailendo.com $&')}
+                                </code>
+                              </div>
+                            </AlertDescription>
+                          </Alert>
+                        )}
+
+                        {analysis.spf.hasMoosend && (
+                          <Alert className="bg-green-500/10 backdrop-blur-xl border-green-500/30">
+                            <CheckCircle2 className="h-5 w-5 text-green-400" />
+                            <AlertDescription className="text-white/90">
+                              <span className="text-green-300">✓ Moosend is properly authorized</span>
+                              <p className="text-sm text-white/70 mt-1">
+                                <code className="bg-white/10 px-2 py-1 rounded text-blue-200">include:spfa.mailendo.com</code> is present
+                              </p>
+                            </AlertDescription>
+                          </Alert>
+                        )}
+                      </>
                     )}
 
                     {/* Errors */}
