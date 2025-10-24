@@ -56,6 +56,7 @@ export function DNSLookup() {
   const [loading, setLoading] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [requestId, setRequestId] = useState<number>(0);
 
   const lookupDNS = async (queryDomain: string, recordType: string = "TXT"): Promise<DNSRecord[]> => {
     try {
@@ -81,6 +82,15 @@ export function DNSLookup() {
       return;
     }
 
+    // Prevent concurrent requests
+    if (loading) {
+      return;
+    }
+
+    // Generate a unique request ID to handle race conditions
+    const currentRequestId = Date.now();
+    setRequestId(currentRequestId);
+    
     setLoading(true);
     setError(null);
     setAnalysis(null);
@@ -198,37 +208,46 @@ export function DNSLookup() {
         dmarcErrors.push("No DMARC record found. DMARC is recommended for complete email authentication.");
       }
 
-      setAnalysis({
-        spf: {
-          exists: spfResults.length > 0,
-          records: spfResults,
-          analysis: spfAnalysis,
-          hasMoosend,
-          hasMultiple: hasMultipleSPF,
-          errors: spfErrors,
-          warnings: spfWarnings,
-        },
-        dkim: {
-          exists: !!dkimData,
-          record: dkimData,
-          isDuplicated,
-          duplicatedLocation,
-          errors: dkimErrors,
-        },
-        dmarc: {
-          exists: dmarcResults.length > 0,
-          record: dmarcData,
-          records: dmarcResults,
-          hasMultiple: hasMultipleDMARC,
-          policy: dmarcPolicy,
-          errors: dmarcErrors,
-        },
-      });
+      // Check if this is still the current request (prevent race conditions)
+      if (currentRequestId === requestId) {
+        setAnalysis({
+          spf: {
+            exists: spfResults.length > 0,
+            records: spfResults,
+            analysis: spfAnalysis,
+            hasMoosend,
+            hasMultiple: hasMultipleSPF,
+            errors: spfErrors,
+            warnings: spfWarnings,
+          },
+          dkim: {
+            exists: !!dkimData,
+            record: dkimData,
+            isDuplicated,
+            duplicatedLocation,
+            errors: dkimErrors,
+          },
+          dmarc: {
+            exists: dmarcResults.length > 0,
+            record: dmarcData,
+            records: dmarcResults,
+            hasMultiple: hasMultipleDMARC,
+            policy: dmarcPolicy,
+            errors: dmarcErrors,
+          },
+        });
+      }
     } catch (err) {
-      setError("Failed to perform DNS lookup. Please try again.");
-      setAnalysis(null);
+      // Only set error if this is still the current request
+      if (currentRequestId === requestId) {
+        setError("Failed to perform DNS lookup. Please try again.");
+        setAnalysis(null);
+      }
     } finally {
-      setLoading(false);
+      // Only set loading to false if this is still the current request
+      if (currentRequestId === requestId) {
+        setLoading(false);
+      }
     }
   };
 
@@ -388,7 +407,14 @@ export function DNSLookup() {
             <Label className="text-white mb-2 block">Domain</Label>
             <Input
               value={domain}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDomain(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                setDomain(e.target.value);
+                // Clear previous results when user changes domain
+                if (analysis) {
+                  setAnalysis(null);
+                  setError(null);
+                }
+              }}
               onKeyPress={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === "Enter" && analyzeDomain()}
               placeholder="example.com"
               className="bg-white/10 border-white/20 text-white placeholder:text-white/40"
