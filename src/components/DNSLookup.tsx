@@ -686,30 +686,6 @@ export function DNSLookup() {
                         </AlertDescription>
                       </Alert>
                     ))}
-
-                    {/* SPF Records */}
-                    {analysis.spf.records.map((record: string, idx: number) => (
-                      <Card key={idx} className="bg-white/5 backdrop-blur-sm border-white/10 p-4">
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-white/60 text-sm">
-                              {analysis.spf.hasMultiple ? `SPF Record ${idx + 1}` : 'SPF Record'}
-                            </span>
-                            <Button
-                              onClick={() => copyToClipboard(record)}
-                              variant="ghost"
-                              size="sm"
-                              className="text-white/60 hover:text-white hover:bg-white/5"
-                            >
-                              <Copy className="h-4 w-4" />
-                            </Button>
-                          </div>
-                          <div className="bg-black/30 backdrop-blur-sm p-3 rounded border border-white/10 break-all">
-                            <code className="text-blue-200 text-sm">{record}</code>
-                          </div>
-                        </div>
-                      </Card>
-                    ))}
                   </div>
                 ) : (
                   <Alert className="bg-red-500/10 backdrop-blur-xl border-red-500/30">
