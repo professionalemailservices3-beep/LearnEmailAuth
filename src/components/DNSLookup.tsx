@@ -37,6 +37,8 @@ interface AnalysisResult {
   dkim: {
     exists: boolean;
     record: string | null;
+    isCNAME: boolean;
+    cnameTarget: string | null;
     isDuplicated: boolean;
     duplicatedLocation: string | null;
     errors: string[];
@@ -165,7 +167,38 @@ export function DNSLookup() {
       // Check DKIM - ms._domainkey
       const dkimDomain = `ms._domainkey.${cleanDomain}`;
       const dkimRecords = await lookupDNS(dkimDomain, "TXT");
-      const dkimData = dkimRecords.length > 0 ? dkimRecords[0].data.replace(/^"|"$/g, '') : null;
+      
+      // Filter for actual TXT records (type 16) and check if they contain DKIM key data
+      let dkimData = null;
+      if (dkimRecords.length > 0) {
+        const txtRecords = dkimRecords.filter(r => r.type === 16);
+        if (txtRecords.length > 0) {
+          const recordData = txtRecords[0].data.replace(/^"|"$/g, '');
+          // Check if it looks like a DKIM key (contains v=DKIM1 or p=)
+          if (recordData.includes('v=DKIM1') || recordData.includes('p=')) {
+            dkimData = recordData;
+          }
+        }
+      }
+      
+      // If we got a CNAME instead of TXT, check if there's a CNAME record
+      let isCNAME = false;
+      let cnameTarget = null;
+      if (!dkimData && dkimRecords.length > 0) {
+        const cnameRecords = dkimRecords.filter(r => r.type === 5);
+        if (cnameRecords.length > 0) {
+          isCNAME = true;
+          cnameTarget = cnameRecords[0].data.replace(/\.$/, ''); // Remove trailing dot
+          // Try to fetch the actual DKIM key from the CNAME target
+          const targetRecords = await lookupDNS(cnameTarget, "TXT");
+          if (targetRecords.length > 0) {
+            const txtRecords = targetRecords.filter(r => r.type === 16);
+            if (txtRecords.length > 0) {
+              dkimData = txtRecords[0].data.replace(/^"|"$/g, '');
+            }
+          }
+        }
+      }
 
       let isDuplicated = false;
       let duplicatedLocation = null;
@@ -223,6 +256,8 @@ export function DNSLookup() {
           dkim: {
             exists: !!dkimData,
             record: dkimData,
+            isCNAME,
+            cnameTarget,
             isDuplicated,
             duplicatedLocation,
             errors: dkimErrors,
@@ -332,7 +367,10 @@ export function DNSLookup() {
     if (analysis.dkim.exists) {
       report += `Status: ✓ Found\n`;
       report += `Location: ms._domainkey.${domain}\n`;
-      report += `Record: ${analysis.dkim.record}\n`;
+      if (analysis.dkim.isCNAME && analysis.dkim.cnameTarget) {
+        report += `Configuration: CNAME (points to ${analysis.dkim.cnameTarget})\n`;
+      }
+      report += `DKIM Public Key: ${analysis.dkim.record}\n`;
     } else {
       if (analysis.dkim.isDuplicated) {
         report += `Status: ❌ Domain Duplication Issue\n`;
@@ -716,13 +754,18 @@ export function DNSLookup() {
                         <p className="text-sm text-white/70 mt-1">
                           Located at: <code className="bg-white/10 px-2 py-1 rounded text-blue-200">ms._domainkey.{domain}</code>
                         </p>
+                        {analysis.dkim.isCNAME && analysis.dkim.cnameTarget && (
+                          <p className="text-sm text-blue-300 mt-2">
+                            ℹ️ Configured as CNAME pointing to: <code className="bg-white/10 px-2 py-1 rounded text-blue-200">{analysis.dkim.cnameTarget}</code>
+                          </p>
+                        )}
                       </AlertDescription>
                     </Alert>
 
                     <Card className="bg-white/5 backdrop-blur-sm border-white/10 p-4">
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-white/60 text-sm">DKIM Record</span>
+                          <span className="text-white/60 text-sm">DKIM Public Key</span>
                           <Button
                             onClick={() => copyToClipboard(analysis.dkim.record!)}
                             variant="ghost"
